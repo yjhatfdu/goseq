@@ -1,4 +1,4 @@
-package seq
+package goseq
 
 var defaultLogger *Logger
 
