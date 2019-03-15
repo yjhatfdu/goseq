@@ -1,1 +1,1 @@
-module goseq
+module github.com/yjhatfdu/goseq
