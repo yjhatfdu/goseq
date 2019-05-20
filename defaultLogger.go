@@ -2,11 +2,12 @@ package goseq
 
 var defaultLogger *Logger
 
-func Connect(apiEndpoint string, apiKey string) {
-	defaultLogger = NewLogger(apiEndpoint, apiKey, 1024)
+//seq server does not support stream mode now
+func Connect(apiEndpoint string, apiKey string, stream bool) {
+	defaultLogger = NewLogger(apiEndpoint, apiKey, 1024, stream)
 }
 
-func Log(level string, messageTemplate string, params ...interface{}) {
+func Log(level int, messageTemplate string, params ...interface{}) {
 	if defaultLogger == nil {
 		return
 	}
@@ -14,25 +15,25 @@ func Log(level string, messageTemplate string, params ...interface{}) {
 }
 
 func Trace(messageTemplate string, params ...interface{}) {
-	Log("TRACE", messageTemplate, params...)
+	Log(TRACE, messageTemplate, params...)
 }
 
 func Debug(messageTemplate string, params ...interface{}) {
-	Log("DEBUG", messageTemplate, params...)
+	Log(DEBUG, messageTemplate, params...)
 }
 
 func Info(messageTemplate string, params ...interface{}) {
-	Log("INFO", messageTemplate, params...)
+	Log(INFO, messageTemplate, params...)
 }
 
 func Warn(messageTemplate string, params ...interface{}) {
-	Log("WARN", messageTemplate, params...)
+	Log(WARN, messageTemplate, params...)
 }
 
 func Error(messageTemplate string, params ...interface{}) {
-	Log("ERROR", messageTemplate, params...)
+	Log(ERROR, messageTemplate, params...)
 }
 
 func Fatal(messageTemplate string, params ...interface{}) {
-	Log("FATAL", messageTemplate, params...)
+	Log(FATAL, messageTemplate, params...)
 }

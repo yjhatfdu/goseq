@@ -2,29 +2,29 @@ package goseq
 
 import (
 	"bytes"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"path"
-	"strconv"
+	"sync"
 	"time"
 )
 
-var LogLevel = map[string]int{
-	"TRACE":       10,
-	"Trace":       10,
-	"DEBUG":       20,
-	"Debug":       20,
-	"INFO":        30,
-	"Information": 30,
-	"WARN":        40,
-	"Warning":     40,
-	"ERROR":       50,
-	"Error":       50,
-	"FATAL":       60,
-	"Fatal":       60,
-}
+//var LogLevel = map[string]int{
+//	"TRACE":       10,
+//	"Trace":       10,
+//	"DEBUG":       20,
+//	"Debug":       20,
+//	"INFO":        30,
+//	"Information": 30,
+//	"WARN":        40,
+//	"Warning":     40,
+//	"ERROR":       50,
+//	"Error":       50,
+//	"FATAL":       60,
+//	"Fatal":       60,
+//}
 
 var LogLevelNumber = map[int]string{
 	10: "TRACE",
@@ -34,6 +34,15 @@ var LogLevelNumber = map[int]string{
 	50: "ERROR",
 	60: "FATAL",
 }
+
+const (
+	TRACE = 10
+	DEBUG = 20
+	INFO  = 30
+	WARN  = 40
+	ERROR = 50
+	FATAL = 60
+)
 
 func getLogLevelName(l int) string {
 	ln := l / 10 * 10
@@ -58,73 +67,106 @@ type Logger struct {
 	apiEndpoint string
 	stdErrOut   bool
 	closeCh     chan int
+	minLevel    int
+	chunked     bool
 }
 
-func NewLogger(apiEndpoint string, apiKey string, bufferSize int) *Logger {
+func NewLogger(apiEndpoint string, apiKey string, bufferSize int, stream bool) *Logger {
 	l := Logger{
 		apiEndpoint: apiEndpoint,
 		apiKey:      apiKey,
 		ch:          make(chan message, bufferSize),
+		chunked:     !stream,
 	}
-	l.connect()
+	go l.connect()
 	return &l
 }
 
-type closerBuffer struct {
-	b      *bytes.Buffer
-	closed bool
-}
-
-func (cb closerBuffer) Read(p []byte) (n int, err error) {
-	if cb.closed {
-		return 0, errors.New("EOF")
-	}
-	return cb.b.Read(p)
-}
-
-func (cb *closerBuffer) Close() error {
-	cb.closed = true
-	cb.b = nil
-	return nil
-}
-
 func (l *Logger) connect() {
-	buf := closerBuffer{b: bytes.NewBuffer(make([]byte, 2048))}
-	go func() {
-		c := &http.Client{
-			Timeout: time.Second * 2,
-		}
-		for {
-			_, err := c.Post(path.Join(l.apiEndpoint, "/api/events/raw"), "application/vnd.serilog.clef", buf)
-			if err != nil {
-				time.Sleep(time.Second)
-				return
+	pr, pw := io.Pipe()
+	buf := bytes.NewBuffer(make([]byte, 0))
+	locker := sync.Mutex{}
+	if l.chunked {
+		go func() {
+			c := &http.Client{}
+			t := time.NewTicker(time.Second)
+			for range t.C {
+				locker.Lock()
+				r, err := http.NewRequest("POST", l.apiEndpoint+"/api/events/raw", buf)
+				r.Header.Set("X-Seq-ApiKey", l.apiKey)
+				r.Header.Set("content-type", "application/vnd.serilog.clef")
+				_, err = c.Do(r)
+				buf.Reset()
+				if err != nil {
+					fmt.Println(err)
+				}
+				locker.Unlock()
 			}
-		}
-	}()
+		}()
+	} else {
+		go func() {
+			c := &http.Client{}
+			for {
+				r, err := http.NewRequest("POST", l.apiEndpoint+"/api/events/raw", pr)
+				r.Header.Set("X-Seq-ApiKey", l.apiKey)
+				r.Header.Set("content-type", "application/vnd.serilog.clef")
+				_, err = c.Do(r)
+				if err != nil {
+					fmt.Println(err)
+				}
+				time.Sleep(time.Second)
+				pr, pw = io.Pipe()
+			}
+		}()
+	}
+
 	for {
 		select {
 		case msg := <-l.ch:
-			params, err := ExtractParams(msg.messageTemplate, msg.params)
+			d, m, err := marshalMsg(msg)
 			if err != nil {
-				panic("todo")
+				continue
 			}
-			if len(msg.params) == 0 {
-				params["@m"] = msg.messageTemplate
+			if l.chunked {
+				locker.Lock()
+				buf.Write(d)
+				locker.Unlock()
 			} else {
-				params["@m"] = RenderMsgTemplate(msg.messageTemplate, params)
+				_, _ = pw.Write(d)
 			}
-			params["@l"] = strconv.Itoa(msg.level)
-			params["@t"] = time.Now().Format(time.RFC3339)
 			if l.stdErrOut {
 				_, _ = os.Stdout.WriteString(fmt.Sprintf("%v\t%v\t%v\n", time.Now().Format(time.RFC3339),
-					getLogLevelName(msg.level), RenderMsgTemplate(msg.messageTemplate, params)))
+					getLogLevelName(msg.level), m))
 			}
 		case <-l.closeCh:
-			_ = buf.Close()
+			_ = pw.Close()
 			return
 		}
 	}
+}
+
+func marshalMsg(msg message) ([]byte, string, error) {
+	params, err := ExtractParams(msg.messageTemplate, msg.params...)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(msg.params) == 0 {
+		params["@m"] = msg.messageTemplate
+	} else {
+		params["@m"] = RenderMsgTemplate(msg.messageTemplate, params)
+	}
+	params["@l"] = LogLevelNumber[msg.level]
+	params["@t"] = time.Now().Format(time.RFC3339)
+	d, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	d = append(d, '\n')
+	return d, params["@m"], nil
+}
+
+func (l *Logger) SetOutputLevel(level int) {
+	l.minLevel = level
 }
 
 func (l *Logger) EnableConsole() {
@@ -133,14 +175,13 @@ func (l *Logger) EnableConsole() {
 func (l *Logger) DisableConsole() {
 	l.stdErrOut = false
 }
-func (l *Logger) Log(level string, messageTemplate string, params ...interface{}) {
-	lv := LogLevel[level]
-	if lv == 0 {
-		lv = 30
+func (l *Logger) Log(level int, messageTemplate string, params ...interface{}) {
+	if level < l.minLevel {
+		return
 	}
 	msg := message{
 		messageTemplate: messageTemplate,
-		level:           lv,
+		level:           level,
 		params:          params,
 	}
 	select {
@@ -150,25 +191,25 @@ func (l *Logger) Log(level string, messageTemplate string, params ...interface{}
 	}
 }
 func (l *Logger) Trace(messageTemplate string, params ...interface{}) {
-	l.Log("TRACE", messageTemplate, params...)
+	l.Log(TRACE, messageTemplate, params...)
 }
 
 func (l *Logger) Debug(messageTemplate string, params ...interface{}) {
-	l.Log("DEBUG", messageTemplate, params...)
+	l.Log(DEBUG, messageTemplate, params...)
 }
 
 func (l *Logger) Info(messageTemplate string, params ...interface{}) {
-	l.Log("INFO", messageTemplate, params...)
+	l.Log(INFO, messageTemplate, params...)
 }
 
 func (l *Logger) Warn(messageTemplate string, params ...interface{}) {
-	l.Log("WARN", messageTemplate, params...)
+	l.Log(WARN, messageTemplate, params...)
 }
 
 func (l *Logger) Error(messageTemplate string, params ...interface{}) {
-	l.Log("ERROR", messageTemplate, params...)
+	l.Log(ERROR, messageTemplate, params...)
 }
 
 func (l *Logger) Fatal(messageTemplate string, params ...interface{}) {
-	l.Log("FATAL", messageTemplate, params...)
+	l.Log(FATAL, messageTemplate, params...)
 }
