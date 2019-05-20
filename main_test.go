@@ -10,7 +10,7 @@ import (
 )
 
 func TestConnect(t *testing.T) {
-	Connect("http://127.0.0.1:9999/api/seq/seqtest/stream/test2", "", false)
+	ConnectLocal()
 	for {
 		Trace("timestamp: {timestamp}, random: {random}", time.Now().UnixNano(), rand.Int())
 		Debug("timestamp: {timestamp}, random: {random}", time.Now().UnixNano(), rand.Int())

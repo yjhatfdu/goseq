@@ -82,6 +82,34 @@ func NewLogger(apiEndpoint string, apiKey string, bufferSize int, stream bool) *
 	return &l
 }
 
+func NewLoggerLocal(bufferSize int) *Logger {
+	l := Logger{
+		ch:        make(chan message, bufferSize),
+		stdErrOut: true,
+	}
+	go l.connectLocal()
+	return &l
+}
+
+func (l *Logger)connectLocal()  {
+	for {
+		select {
+		case msg := <-l.ch:
+			_, m, err := marshalMsg(msg)
+			if err != nil {
+				continue
+			}
+
+			if l.stdErrOut {
+				_, _ = os.Stdout.WriteString(fmt.Sprintf("%v\t%v\t%v\n", time.Now().Format("2006-01-02T15:04:00"),
+					getLogLevelName(msg.level), m))
+			}
+		case <-l.closeCh:
+			return
+		}
+	}
+}
+
 func (l *Logger) connect() {
 	pr, pw := io.Pipe()
 	buf := bytes.NewBuffer(make([]byte, 0))

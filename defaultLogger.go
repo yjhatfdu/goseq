@@ -6,6 +6,9 @@ var defaultLogger *Logger
 func Connect(apiEndpoint string, apiKey string, stream bool) {
 	defaultLogger = NewLogger(apiEndpoint, apiKey, 1024, stream)
 }
+func ConnectLocal()  {
+	defaultLogger = NewLoggerLocal(1024)
+}
 
 func Log(level int, messageTemplate string, params ...interface{}) {
 	if defaultLogger == nil {
